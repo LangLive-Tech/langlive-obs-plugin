@@ -1,0 +1,417 @@
+# GitLab CI for the LangLive OBS Plugin.
+#
+# Jobs run on shell-executor runners on the build machines themselves:
+#   obs-mac      macOS with Xcode command line tools, CMake and Ninja (Homebrew)
+#   obs-windows  Windows with Visual Studio (MSVC, bundled CMake and Ninja), PowerShell,
+#                and Inno Setup 6
+# except flush-cdn:prod, on the company's shared `ll` runner: the only one
+# that reaches the internal CDN flush API.
+# Every job keeps .deps/ (OBS sources and prebuilt dependencies, several
+# minutes to download from GitHub) in the runner's checkout between pipelines.
+# All jobs on a runner share that checkout, so a job that cleaned it with the
+# default flags would make the next build download everything again. The build
+# jobs first run scripts/ci/prefetch-deps.cmake, which replaces damaged
+# archives and, when the project sets the OBS_DEPS_MIRROR variable, takes them
+# from that mirror instead of GitHub.
+#
+# CI builds the installers; CD deploys them to an environment, each an S3
+# prefix (S3_BUCKET, S3_REGION):
+#   default branch  build (QA)          -> upload:dev    dev/ snapshot
+#   vX.Y.Z tag      build (QA) + build-prod (production)
+#                   -> release: the tag's GitLab Release with all four
+#                      installers (QA ones named "-qa")
+#                   -> deploy:qa (automatic)  test/<version>/ + test/latest.json
+#                   -> deploy:prod (manual, after QA)  prod/<version>/ +
+#                      prod/latest.json, from the Release's files, so what QA
+#                      approved is what ships without building again
+# A build compiles in its environment's QA_* or PROD_* variables: the API
+# (*_API_BASE_URL), the website for the terms and privacy links
+# (*_WEBSITE_URL, empty: production) and the update manifest
+# (*_UPDATE_MANIFEST_URL). They are mapped onto LANGLIVE_* job variables, so
+# the project must not define LANGLIVE_* variables itself (project variables
+# would take precedence). TEST_* keys write dev/ and test/, PROD_* keys
+# (protected: only protected v* tags get them) prod/. Each job that uses a key
+# pair names its environment (TEST_*: dev and test, PROD_*: production), so
+# the pairs can be scoped to those environments (DevOps sets the scopes in the
+# project settings) and no other job, nothing on the shared runner, gets an
+# S3 key. On version tags the macOS installers (QA and production) are
+# signed with the obs-mac runner's Developer ID certificates and notarized
+# (scripts/ci/macos-signing.sh, scripts/ci/notarize-macos.sh); the protected
+# MACOS_KEYCHAIN_PASSWORD unlocks its keychain. Windows installers are
+# unsigned.
+
+stages:
+  - check
+  - test
+  - build
+  - release
+  - deploy
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    # Only version tags; QA tests a version on test before it is released.
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+
+variables:
+  GIT_DEPTH: "0" # gitleaks scans the whole history
+  GIT_CLEAN_FLAGS: -ffdx -e .deps/
+  GITLEAKS_VERSION: "8.21.2"
+  GITLEAKS_SHA256: "cad3de5dc9a4d5447d967a70a4d49499c557f04db028274cc324f9ff983f6502" # darwin_arm64
+
+gitleaks:
+  stage: check
+  tags: [obs-mac]
+  interruptible: true
+  script:
+    # A pinned, checksummed release in the job's own directory; nothing is
+    # installed on the runner.
+    - curl -fsSL -o gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_darwin_arm64.tar.gz"
+    - echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | shasum -a 256 -c -
+    - mkdir -p .ci-tools && tar -xzf gitleaks.tar.gz -C .ci-tools gitleaks
+    - .ci-tools/gitleaks git --redact --verbose .
+
+unit-tests:macos:
+  stage: test
+  tags: [obs-mac]
+  interruptible: true
+  before_script:
+    - export PATH="/opt/homebrew/bin:$PATH"
+  script:
+    - cmake -S tests -B build_tests -G Ninja -DCMAKE_COMPILE_WARNING_AS_ERROR=ON -DCMAKE_CXX_FLAGS="-Wall -Wextra -Wpedantic"
+    - cmake --build build_tests
+    - ctest --test-dir build_tests --output-on-failure
+
+unit-tests:windows:
+  stage: test
+  tags: [obs-windows]
+  interruptible: true
+  script:
+    # PowerShell cannot load vcvars64.bat into its own environment; the
+    # batch script loads it and runs the build in one cmd session.
+    - cmd /c scripts\ci\windows-unit-tests.bat
+
+# --- CI: builds --------------------------------------------------------------
+# The URLs are always passed, so a value left in the CMake cache (such as a
+# local test update server) never ships. Each build leaves its installers in
+# release/<BUILD_ENV>/.
+
+.build-macos:
+  tags: [obs-mac]
+  interruptible: true
+  before_script:
+    - export PATH="/opt/homebrew/bin:$PATH"
+    - xcodebuild -version
+  script:
+    - cmake -DPLATFORM=macos -P scripts/ci/prefetch-deps.cmake
+    - cmake --preset macos -DCMAKE_COMPILE_WARNING_AS_ERROR=ON "-DLANGLIVE_UPDATE_MANIFEST_URL=${LANGLIVE_UPDATE_MANIFEST_URL}" "-DLANGLIVE_API_BASE_URL=${LANGLIVE_API_BASE_URL}" "-DLANGLIVE_WEBSITE_URL=${LANGLIVE_WEBSITE_URL}" "-DLANGLIVE_QA_BUILD=${LANGLIVE_QA_BUILD}"
+    # Version tags (QA and production installers) are signed with Developer
+    # ID and notarized; so is a pipeline run with MACOS_SIGN=1, to try it.
+    # Branch builds stay unsigned.
+    - if [ -n "${CI_COMMIT_TAG:-}" ] || [ "${MACOS_SIGN:-}" = 1 ]; then source scripts/ci/macos-signing.sh; fi
+    - ./scripts/macos/package-macos-installer.sh Release
+    - mkdir -p "release/$BUILD_ENV" && mv release/*.pkg "release/$BUILD_ENV/"
+    - if [ -n "${MACOS_INSTALLER_IDENTITY:-}" ]; then ./scripts/ci/notarize-macos.sh release/$BUILD_ENV/*.pkg; fi
+  artifacts:
+    name: langlive-obs-plugin-macos-$BUILD_ENV-$CI_COMMIT_SHORT_SHA
+    expire_in: 2 weeks
+    paths:
+      - release/*/*.pkg
+
+.build-windows:
+  tags: [obs-windows]
+  interruptible: true
+  script:
+    - powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\windows-build.ps1
+    - New-Item -ItemType Directory -Force "release\$env:BUILD_ENV" | Out-Null
+    - Move-Item release\*.exe "release\$env:BUILD_ENV\"
+  artifacts:
+    name: langlive-obs-plugin-windows-$BUILD_ENV-$CI_COMMIT_SHORT_SHA
+    expire_in: 2 weeks
+    paths:
+      - release/*/*.exe
+
+# For QA: the dev snapshot (no update checks) and the test environment.
+.qa-config:
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+      variables:
+        BUILD_ENV: qa
+        LANGLIVE_QA_BUILD: "ON"
+        LANGLIVE_API_BASE_URL: $QA_API_BASE_URL
+        LANGLIVE_WEBSITE_URL: $QA_WEBSITE_URL
+        LANGLIVE_UPDATE_MANIFEST_URL: $QA_UPDATE_MANIFEST_URL
+    - if: $CI_COMMIT_BRANCH || $CI_PIPELINE_SOURCE == "merge_request_event"
+      variables:
+        BUILD_ENV: qa
+        LANGLIVE_QA_BUILD: "ON"
+        LANGLIVE_API_BASE_URL: $QA_API_BASE_URL
+        LANGLIVE_WEBSITE_URL: $QA_WEBSITE_URL
+        LANGLIVE_UPDATE_MANIFEST_URL: ""
+
+.prod-config:
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+  variables:
+    BUILD_ENV: prod
+    LANGLIVE_QA_BUILD: "OFF" # never QA-only features in production
+    LANGLIVE_API_BASE_URL: $PROD_API_BASE_URL
+    LANGLIVE_WEBSITE_URL: $PROD_WEBSITE_URL
+    LANGLIVE_UPDATE_MANIFEST_URL: $PROD_UPDATE_MANIFEST_URL
+
+build:macos:
+  extends: [.build-macos, .qa-config]
+  stage: build
+
+build:windows:
+  extends: [.build-windows, .qa-config]
+  stage: build
+
+build-prod:macos:
+  extends: [.build-macos, .prod-config]
+  stage: build
+
+build-prod:windows:
+  extends: [.build-windows, .prod-config]
+  stage: build
+
+# --- CI: UI tests ---------------------------------------------------------------
+# The Qt dialogs, headless, with fakes for OBS. They build against the Qt 6
+# and obs-studio headers in .deps/, which the build job on the same runner
+# has set up, so they run after it.
+
+ui-tests:macos:
+  stage: build
+  tags: [obs-mac]
+  interruptible: true
+  needs:
+    - job: build:macos
+      artifacts: false
+  before_script:
+    - export PATH="/opt/homebrew/bin:$PATH"
+  script:
+    - cmake -S tests/ui -B build_ui_tests -G Ninja
+    - cmake --build build_ui_tests
+    - ctest --test-dir build_ui_tests --output-on-failure --timeout 300
+
+ui-tests:windows:
+  stage: build
+  tags: [obs-windows]
+  interruptible: true
+  needs:
+    - job: build:windows
+      artifacts: false
+  script:
+    - cmd /c scripts\ci\windows-ui-tests.bat
+
+# --- CI: the tag's GitLab Release ---------------------------------------------
+
+release:
+  stage: release
+  tags: [obs-mac]
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+  needs:
+    - build:macos
+    - build:windows
+    - build-prod:macos
+    - build-prod:windows
+    - job: ui-tests:macos
+      artifacts: false
+    - job: ui-tests:windows
+      artifacts: false
+  script:
+    # Both builds must be fit to ship: tag = version, API and manifest URLs.
+    - LANGLIVE_API_BASE_URL="$QA_API_BASE_URL" LANGLIVE_UPDATE_MANIFEST_URL="$QA_UPDATE_MANIFEST_URL" ./scripts/ci/check-release-config.sh
+    - LANGLIVE_API_BASE_URL="$PROD_API_BASE_URL" LANGLIVE_UPDATE_MANIFEST_URL="$PROD_UPDATE_MANIFEST_URL" ./scripts/ci/check-release-config.sh
+    - ./scripts/ci/gitlab-release.sh
+
+# --- CD: deployments ------------------------------------------------------------
+
+upload:dev:
+  stage: deploy
+  tags: [obs-mac]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  needs:
+    - build:macos
+    - build:windows
+    - job: ui-tests:macos
+      artifacts: false
+    - job: ui-tests:windows
+      artifacts: false
+  environment:
+    name: dev
+  variables:
+    AWS_ACCESS_KEY_ID: $TEST_ACCESS_ID
+    AWS_SECRET_ACCESS_KEY: $TEST_ACCESS_SECRET_KEY
+    RELEASE_DIR: release/qa
+  script:
+    - ./scripts/ci/upload-s3.sh dev --snapshot-name
+
+deploy:qa:
+  stage: deploy
+  tags: [obs-mac]
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+  needs: [release, build:macos, build:windows]
+  environment:
+    name: test
+  variables:
+    AWS_ACCESS_KEY_ID: $TEST_ACCESS_ID
+    AWS_SECRET_ACCESS_KEY: $TEST_ACCESS_SECRET_KEY
+    RELEASE_DIR: release/qa
+  script:
+    # A tag pushed again (a failed or rebuilt release) replaces its files.
+    - ./scripts/ci/upload-s3.sh "test/$(jq -r .version buildspec.json)" --snapshot
+    - ./scripts/ci/publish-manifest.sh test
+    # Scenarios for QA's qa-override.json (QA builds only), on these installers.
+    - ./scripts/ci/publish-scenarios.sh test
+
+# Pressed once QA has passed the version on test. Deploys the production
+# installers attached to the Release by the release job.
+deploy:prod:
+  stage: deploy
+  tags: [obs-mac]
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+      when: manual
+      allow_failure: false
+  needs:
+    - job: deploy:qa
+      artifacts: false
+  environment:
+    name: production
+  variables:
+    AWS_ACCESS_KEY_ID: $PROD_ACCESS_ID
+    AWS_SECRET_ACCESS_KEY: $PROD_ACCESS_SECRET_KEY
+    RELEASE_DIR: release/prod
+  script:
+    - ./scripts/ci/deploy-prod.sh
+  artifacts:
+    paths: [cdn-flush-paths.txt] # for flush-cdn:prod
+    expire_in: 1 week
+
+# After deploy:prod: has the CDN drop its copies of latest.json (cached for
+# 60 seconds anyway) and of this version's installers (cached for a year;
+# replaced only when a tag published again is deployed), the paths
+# deploy:prod lists in cdn-flush-paths.txt. On the shared `ll` runner, so
+# without a checkout and without keys; the API's URL is the CDN_FLUSH_URL
+# variable, the domain PROD_DOWNLOAD_URL's. A failure only warns: the release
+# is out either way.
+flush-cdn:prod:
+  stage: deploy
+  tags: [ll]
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+  needs: [deploy:prod]
+  allow_failure: true
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - command -v curl >/dev/null || (apt-get update -y && apt-get install -y curl) || apk add --no-cache curl
+    - |
+      set -eu
+      : "${CDN_FLUSH_URL:?CDN_FLUSH_URL is not set}"
+      domain="$(printf '%s' "$PROD_DOWNLOAD_URL" | sed -E 's#^https?://([^/:]+).*#\1#')"
+      urls="$(sed -e 's/.*/"&"/' cdn-flush-paths.txt | paste -sd, -)"
+      echo "Flushing on $domain:"
+      cat cdn-flush-paths.txt
+      status="$(curl -sS -o response.txt -w '%{http_code}' --max-time 60 -X POST "$CDN_FLUSH_URL" \
+        -H 'Content-Type: application/json' --data-raw "{\"urls\":[$urls],\"domain\":\"$domain\"}")"
+      echo "HTTP $status: $(cat response.txt)"
+      [ "$status" -ge 200 ] && [ "$status" -lt 300 ]
+
+# After deploy:prod: publishes the released version on the public GitHub
+# mirror, one commit per release on GitHub's main (the tag's tree; not this
+# repository's history), its tag, and a GitHub Release with the production
+# installers (scripts/ci/sync-github.sh). Never before release: a
+# tag on a public mirror cannot be taken back. GITHUB_REPOSITORY (owner/name)
+# and the protected GITHUB_PUSH_TOKEN are project variables. Fails loudly,
+# since the GPL needs the source where the installers are; run it again
+# after fixing, what is on GitHub already is skipped.
+sync:github:
+  stage: deploy
+  tags: [obs-mac]
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+  needs:
+    - job: deploy:prod
+      artifacts: false
+  script:
+    - ./scripts/ci/sync-github.sh
+
+# Manual, on main: publishes a version released before sync:github existed
+# (or one whose sync failed and whose tag pipeline is gone). Play it with the
+# variable SYNC_TAG=vX.Y.Z; the same checks apply (released, in order).
+sync:github:tag:
+  stage: deploy
+  tags: [obs-mac]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: true
+  needs: []
+  script:
+    - '[ -n "${SYNC_TAG:-}" ] || { echo "error: play this job with the variable SYNC_TAG=vX.Y.Z" >&2; exit 1; }'
+    - ./scripts/ci/sync-github.sh
+
+# Manual: checks that each S3 key pair writes and reads only its own prefix,
+# without publishing anything. One job per key pair, each in an environment the
+# pair is scoped to (action: prepare, so no deployment is recorded). On the
+# default branch, which is protected, so the PROD_* keys are available.
+# Manual: can the obs-mac runner sign and notarize with its Developer ID
+# certificates? Uses throwaway files only (scripts/ci/check-macos-signing.sh).
+# Needs the protected MACOS_KEYCHAIN_PASSWORD variable, so main or a version
+# tag, and the notarytool credentials saved in the runner's keychain.
+check:macos-signing:
+  stage: deploy
+  tags: [obs-mac]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: true
+  needs: []
+  script:
+    - ./scripts/ci/check-macos-signing.sh
+
+# Manual: can sync:github publish? Reads the GitHub repository and dry-runs a
+# push with GITHUB_PUSH_TOKEN, changing nothing on GitHub
+# (scripts/ci/check-github-access.sh). On the default branch, which is
+# protected, so the protected token is available.
+check:github-access:
+  stage: deploy
+  tags: [obs-mac]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: true
+  needs: []
+  script:
+    - ./scripts/ci/check-github-access.sh
+
+.check-s3-access:
+  stage: deploy
+  tags: [obs-mac]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: true
+  needs: []
+
+check:s3-access:test:
+  extends: .check-s3-access
+  environment:
+    name: test
+    action: prepare
+  script:
+    - ./scripts/ci/check-s3-access.sh test
+
+check:s3-access:prod:
+  extends: .check-s3-access
+  environment:
+    name: production
+    action: prepare
+  script:
+    - ./scripts/ci/check-s3-access.sh prod

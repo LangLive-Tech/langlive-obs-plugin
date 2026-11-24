@@ -1,0 +1,174 @@
+; Inno Setup script for @DISPLAY_NAME@
+; Not part of the official obs-plugintemplate (which only zips builds for
+; Windows) - installs into OBS's per-machine third-party plugin directory
+; (%ProgramData%\obs-studio\plugins) and registers a normal Windows
+; uninstall entry, unlike a plain zip extraction.
+
+#define MyAppName "@DISPLAY_NAME@"
+#define MyAppVersion "@PLUGIN_VERSION@"
+#define MyAppPublisher "@PLUGIN_AUTHOR@"
+
+[Setup]
+; Fixed GUID - do not regenerate. Windows uses this to recognize upgrades
+; of the same product; a new GUID would make every build look like an
+; unrelated app in "Apps & Features".
+AppId={{7DF38902-A4D3-4C66-99AD-0405570EF280}
+AppName={#MyAppName}
+AppVersion={#MyAppVersion}
+AppPublisher={#MyAppPublisher}
+; OBS scans %ProgramData%\obs-studio\plugins for third-party plugins on
+; Windows - see obs-studio's OBSBasic.cpp GetProgramDataPath() usage. That
+; directory is normally writable without elevation once obs-studio's own
+; installer has created it, so this doesn't need to run as admin.
+;
+; Deliberately {%ProgramData} (raw environment variable), not Inno's
+; {commonappdata} constant: {commonappdata} silently resolves to a
+; different, per-user-redirected path depending on whether Setup ends up
+; running in "administrative install mode" or not, which is exactly the
+; ambiguity PrivilegesRequiredOverridesAllowed introduces. {%ProgramData}
+; always expands to the literal C:\ProgramData regardless of mode.
+DefaultDirName={%ProgramData}\obs-studio\plugins\@PRODUCT_NAME@
+DisableDirPage=yes
+DisableProgramGroupPage=yes
+OutputDir=@OUTPUT_DIR@
+OutputBaseFilename=@OUTPUT_BASENAME@
+Compression=lzma2
+SolidCompression=yes
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+UninstallDisplayName={#MyAppName}
+PrivilegesRequired=lowest
+
+[Files]
+; Debug symbols (.pdb) stay with the build artifacts, not on streamers' machines.
+Source: "@INSTALL_ROOT@\bin\64bit\*"; DestDir: "{app}\bin\64bit"; Excludes: "*.pdb"; Flags: ignoreversion
+Source: "@INSTALL_ROOT@\data\*"; DestDir: "{app}\data"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[UninstallDelete]
+Type: filesandordirs; Name: "{app}"
+; The plugin's settings in OBS's config folder of the user who uninstalls
+; (Setup runs as that user: PrivilegesRequired=lowest): the login's
+; nickname, the go-live form, the cover, a live left open, and the qa/
+; folder of QA builds. As the macOS uninstall script does. The token is
+; in Credential Manager (see [Code]).
+Type: filesandordirs; Name: "{userappdata}\obs-studio\plugin_config\@PRODUCT_NAME@"
+
+[Code]
+// Refuse to install over a newer version: downgrades are not supported (the
+// plugin's settings may have been migrated, and the updater never offers one).
+// Reinstalling the same version and upgrading are allowed.
+
+const
+  UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{7DF38902-A4D3-4C66-99AD-0405570EF280}_is1';
+
+// Splits "1.2.3-rc.1" into numeric parts and the prerelease label.
+procedure ParseVersion(Version: String; var Major, Minor, Patch: Integer; var Prerelease: String);
+var
+  Dash, Dot: Integer;
+  Core: String;
+begin
+  Prerelease := '';
+  Dash := Pos('-', Version);
+  if Dash > 0 then begin
+    Prerelease := Copy(Version, Dash + 1, Length(Version));
+    Core := Copy(Version, 1, Dash - 1);
+  end else
+    Core := Version;
+
+  Dot := Pos('.', Core);
+  Major := StrToIntDef(Copy(Core, 1, Dot - 1), 0);
+  Core := Copy(Core, Dot + 1, Length(Core));
+  Dot := Pos('.', Core);
+  Minor := StrToIntDef(Copy(Core, 1, Dot - 1), 0);
+  Patch := StrToIntDef(Copy(Core, Dot + 1, Length(Core)), 0);
+end;
+
+// SemVer precedence for the numeric parts; a release is newer than its
+// prereleases. Prerelease labels are compared as plain strings.
+function CompareVersions(A, B: String): Integer;
+var
+  AMajor, AMinor, APatch, BMajor, BMinor, BPatch: Integer;
+  APre, BPre: String;
+begin
+  ParseVersion(A, AMajor, AMinor, APatch, APre);
+  ParseVersion(B, BMajor, BMinor, BPatch, BPre);
+  if AMajor <> BMajor then Result := AMajor - BMajor
+  else if AMinor <> BMinor then Result := AMinor - BMinor
+  else if APatch <> BPatch then Result := APatch - BPatch
+  else if APre = BPre then Result := 0
+  else if APre = '' then Result := 1
+  else if BPre = '' then Result := -1
+  else Result := CompareStr(APre, BPre);
+end;
+
+function InstalledVersion(): String;
+begin
+  Result := '';
+  if not RegQueryStringValue(HKCU, UninstallKey, 'DisplayVersion', Result) then
+    RegQueryStringValue(HKLM, UninstallKey, 'DisplayVersion', Result);
+end;
+
+// OBS keeps the plugin's DLL loaded while running, so the files could not be
+// replaced. Checks every user's processes; if WMI fails, do not block.
+function IsObsRunning(): Boolean;
+var
+  Locator, Service, Processes: Variant;
+begin
+  Result := False;
+  try
+    Locator := CreateOleObject('WbemScripting.SWbemLocator');
+    Service := Locator.ConnectServer('.', 'root\CIMV2');
+    Processes := Service.ExecQuery('SELECT ProcessId FROM Win32_Process WHERE Name = ''obs64.exe''');
+    Result := Processes.Count > 0;
+  except
+    Log('Could not check whether OBS is running: ' + GetExceptionMessage);
+  end;
+end;
+
+function InitializeSetup(): Boolean;
+var
+  Installed: String;
+begin
+  Result := True;
+  Installed := InstalledVersion();
+  if (Installed <> '') and (CompareVersions(Installed, '{#MyAppVersion}') > 0) then begin
+    SuppressibleMsgBox(
+      '已安裝較新的版本（v' + Installed + '），無法安裝舊版（v{#MyAppVersion}）。' + #13#10 +
+      '如需改用舊版，請先在「設定 > 應用程式」解除安裝。' + #13#10#13#10 +
+      'A newer version (v' + Installed + ') is already installed, so v{#MyAppVersion} cannot be installed. ' +
+      'To use an older version, uninstall the current one first in Settings > Apps.',
+      mbError, MB_OK, IDOK);
+    Log('Downgrade from ' + Installed + ' to {#MyAppVersion} refused');
+    Result := False;
+    exit;
+  end;
+
+  if IsObsRunning() then begin
+    SuppressibleMsgBox(
+      '請先關閉 OBS Studio' + #13#10#13#10 +
+      '安裝浪LIVE OBS 插件前，請先關閉 OBS Studio，再重新執行安裝程式。' + #13#10#13#10 +
+      'Please quit OBS Studio' + #13#10#13#10 +
+      'Quit OBS Studio before installing the LangLive OBS plugin, then run the installer again.',
+      mbError, MB_OK, IDOK);
+    Log('OBS is running; installation refused');
+    Result := False;
+  end;
+end;
+
+// The saved login token is in Credential Manager (src/obs/secure-store-windows.cpp),
+// not under {app}: remove it with the plugin. Upgrades do not uninstall, so
+// they keep the login.
+function CredDeleteW(TargetName: String; CredType: DWORD; Flags: DWORD): BOOL;
+  external 'CredDeleteW@advapi32.dll stdcall';
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usPostUninstall then begin
+    // 1: CRED_TYPE_GENERIC. Fails harmlessly when there is no saved login.
+    // Production builds and QA builds each keep their own.
+    if CredDeleteW('LangLive OBS Plugin/session-token', 1, 0) then
+      Log('Removed the saved login from Credential Manager');
+    if CredDeleteW('LangLive OBS Plugin (QA)/session-token', 1, 0) then
+      Log('Removed the saved QA login from Credential Manager');
+  end;
+end;

@@ -1,0 +1,58 @@
+LangLive OBS Plugin - Third-Party Notices
+=========================================
+
+The LangLive OBS Plugin is licensed under the GNU General Public License,
+version 2 or (at your option) any later version. See LICENSE for the full
+text.
+
+This file lists the third-party software the plugin contains or uses.
+
+
+1. Included in the plugin
+-------------------------
+
+QR Code generator library (C++) v1.8.0
+  Project Nayuki - https://github.com/nayuki/QR-Code-generator
+  Used for the QR code login page. Compiled into the plugin, unmodified.
+  License: MIT
+
+  Copyright © 2022 Project Nayuki. (MIT License)
+  https://www.nayuki.io/page/qr-code-generator-library
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy of
+  this software and associated documentation files (the "Software"), to deal in
+  the Software without restriction, including without limitation the rights to
+  use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+  the Software, and to permit persons to whom the Software is furnished to do so,
+  subject to the following conditions:
+
+  * The above copyright notice and this permission notice shall be included in
+    all copies or substantial portions of the Software.
+
+  * The Software is provided "as is", without warranty of any kind, express or
+    implied, including but not limited to the warranties of merchantability,
+    fitness for a particular purpose and noninfringement. In no event shall the
+    authors or copyright holders be liable for any claim, damages or other
+    liability, whether in an action of contract, tort or otherwise, arising from,
+    out of or in connection with the Software or the use or other dealings in the
+    Software.
+
+
+obs-plugintemplate
+  OBS Project - https://github.com/obsproject/obs-plugintemplate
+  The build scripts and the plugin-support helper are based on it.
+  License: GNU General Public License, version 2 or later (see LICENSE)
+
+
+2. Used at runtime, not included
+--------------------------------
+
+The plugin runs inside OBS Studio and uses these libraries from the OBS
+Studio installation on your computer. The plugin's installers do not
+contain them; they are distributed with OBS Studio under their own licenses.
+
+  libobs and obs-frontend-api (OBS Studio)
+    https://obsproject.com - GNU General Public License, version 2 or later
+
+  Qt 6 (QtCore, QtGui, QtWidgets, QtNetwork)
+    https://www.qt.io - GNU Lesser General Public License, version 3

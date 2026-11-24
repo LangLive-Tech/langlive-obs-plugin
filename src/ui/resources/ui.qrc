@@ -1,0 +1,7 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+  <qresource prefix="/langlive-obs-plugin">
+    <file>chevron-down.svg</file>
+    <file>chevron-up.svg</file>
+  </qresource>
+</RCC>

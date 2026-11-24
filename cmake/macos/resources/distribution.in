@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<installer-gui-script minSpecVersion="1.0">
+    <options
+        rootVolumeOnly="true"
+        hostArchitectures="arm64,x86_64"
+        customize="never"
+        allow-external-scripts="no" />
+    <!-- Installs for the current user: ~/Library/Application Support/obs-studio/plugins -->
+    <domains enable_currentUserHome="true" enable_anywhere="false" enable_localSystem="false" />
+    <title>@PLUGIN_DISPLAY_NAME@</title>
+    <choices-outline>
+        <line choice="obs-plugin" />
+    </choices-outline>
+    <choice id="obs-plugin" title="@PLUGIN_DISPLAY_NAME@" description="">
+        <pkg-ref id="@MACOS_BUNDLEID@" />
+    </choice>
+    <pkg-ref id="@MACOS_BUNDLEID@" version="@CMAKE_PROJECT_VERSION@">#@CMAKE_PROJECT_NAME@.pkg</pkg-ref>
+    <installation-check script="installCheck();" />
+    <script>
+        function installCheck() {
+            var macOSVersion = system.version.ProductVersion
+
+            if (system.compareVersions(macOSVersion, '@CMAKE_OSX_DEPLOYMENT_TARGET@') == -1) {
+                my.result.title = system.localizedStandardStringWithFormat(
+                                    'InstallationCheckError',
+                                    system.localizedString('DISTRIBUTION_TITLE')
+                                  );
+                my.result.message = ' ';
+                my.result.type = 'Fatal';
+                return false;
+            }
+
+            // No downgrades: the package would keep the newer bundle and
+            // still report success (BundleIsVersionChecked), so say so.
+            var home = system.env.HOME;
+            var installed = home ? system.files.bundleAtPath(home + '/Library/Application Support/obs-studio/plugins/@CMAKE_PROJECT_NAME@.plugin') : null;
+            var installedVersion = installed ? installed.CFBundleShortVersionString : null;
+            if (installedVersion &amp;&amp; system.compareVersions(installedVersion, '@CMAKE_PROJECT_VERSION@') > 0) {
+                my.result.title = '已安裝較新的版本 / A newer version is installed';
+                my.result.message = '已安裝較新的版本（v' + installedVersion + '），無法安裝舊版（v@CMAKE_PROJECT_VERSION@）。如需改用舊版，請先移除目前的插件。\n' +
+                    'A newer version (v' + installedVersion + ') is already installed, so v@CMAKE_PROJECT_VERSION@ cannot be installed. To use an older version, remove the current plugin first.';
+                my.result.type = 'Fatal';
+                return false;
+            }
+
+            // OBS keeps the plugin loaded while running; replace it only
+            // when OBS is closed.
+            var obs = system.applications.fromIdentifier('com.obsproject.obs-studio');
+            if (obs &amp;&amp; obs.length > 0) {
+                my.result.title = '請先關閉 OBS Studio / Please quit OBS Studio';
+                my.result.message = '安裝浪LIVE OBS 插件前，請先關閉 OBS Studio，再重新執行安裝程式。\nQuit OBS Studio before installing the LangLive OBS plugin, then run the installer again.';
+                my.result.type = 'Fatal';
+                return false;
+            }
+            return true;
+        }
+    </script>
+</installer-gui-script>

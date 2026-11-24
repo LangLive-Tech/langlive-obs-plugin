@@ -1,0 +1,81 @@
+# Builds the macOS installer (.pkg) from the installed plugin bundle. Runs as
+# part of `cmake --install`; scripts/macos/package-macos-installer.sh is the
+# entry point.
+#
+# Signing, when the environment asks for it (CI release builds, see
+# scripts/ci/macos-signing.sh): MACOS_CODESIGN_IDENTITY signs the plugin
+# (Developer ID Application, hardened runtime, secure timestamp), and
+# MACOS_INSTALLER_IDENTITY the package (Developer ID Installer). Both are
+# needed for notarization (scripts/ci/notarize-macos.sh). Without them the
+# plugin keeps Xcode's ad-hoc signature and the package is unsigned.
+
+set(_prefix "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}")
+set(_root "${_prefix}/package")
+set(_temp "${_prefix}/temp")
+
+# The package installs into the current user's home (see distribution.in),
+# so its payload is rooted at ~.
+make_directory("${_root}/Library/Application Support/obs-studio/plugins")
+
+if(EXISTS "${_prefix}/@CMAKE_PROJECT_NAME@.plugin" AND NOT IS_SYMLINK "${_prefix}/@CMAKE_PROJECT_NAME@.plugin")
+  # Debug symbols (.dSYM) stay with the build artifacts, not on streamers' machines.
+  file(INSTALL DESTINATION "${_root}/Library/Application Support/obs-studio/plugins"
+    TYPE DIRECTORY FILES "${_prefix}/@CMAKE_PROJECT_NAME@.plugin" USE_SOURCE_PERMISSIONS)
+endif()
+
+make_directory("${_temp}")
+
+# Extended attributes (e.g. provenance) would be packed as AppleDouble "._*"
+# files and installed next to the plugin.
+execute_process(COMMAND /usr/bin/xattr -cr "${_root}" COMMAND_ERROR_IS_FATAL ANY)
+
+# Signed here, in the payload, so that nothing after it changes the bundle.
+set(_bundle "${_root}/Library/Application Support/obs-studio/plugins/@CMAKE_PROJECT_NAME@.plugin")
+if(NOT "$ENV{MACOS_CODESIGN_IDENTITY}" STREQUAL "")
+  message(STATUS "Signing @CMAKE_PROJECT_NAME@.plugin (Developer ID Application)")
+  execute_process(
+    COMMAND /usr/bin/codesign --force --options runtime --timestamp --sign "$ENV{MACOS_CODESIGN_IDENTITY}" "${_bundle}"
+    COMMAND_ERROR_IS_FATAL ANY)
+  execute_process(COMMAND /usr/bin/codesign --verify --strict --verbose=2 "${_bundle}" COMMAND_ERROR_IS_FATAL ANY)
+endif()
+
+# pkgbuild marks bundles as relocatable by default: if a bundle with the same
+# identifier exists anywhere else (e.g. a build directory), Installer updates
+# that copy instead of installing into OBS's plugin folder. Turn it off.
+execute_process(
+  COMMAND /usr/bin/pkgbuild --analyze --root "${_root}" "${_temp}/component.plist"
+  COMMAND_ERROR_IS_FATAL ANY)
+# --analyze leaves the key out (relocatable by default); replace it either way.
+execute_process(
+  COMMAND /usr/libexec/PlistBuddy -c "Delete :0:BundleIsRelocatable" "${_temp}/component.plist"
+  OUTPUT_QUIET ERROR_QUIET)
+execute_process(
+  COMMAND /usr/libexec/PlistBuddy -c "Add :0:BundleIsRelocatable bool false" "${_temp}/component.plist"
+  COMMAND_ERROR_IS_FATAL ANY)
+
+execute_process(
+  COMMAND /usr/bin/pkgbuild
+    --identifier "@MACOS_BUNDLEID@"
+    --version "@CMAKE_PROJECT_VERSION@"
+    --root "${_root}"
+    --component-plist "${_temp}/component.plist"
+    "${_temp}/@CMAKE_PROJECT_NAME@.pkg"
+  COMMAND_ERROR_IS_FATAL ANY)
+
+set(_sign)
+if(NOT "$ENV{MACOS_INSTALLER_IDENTITY}" STREQUAL "")
+  message(STATUS "Signing the installer (Developer ID Installer)")
+  set(_sign --sign "$ENV{MACOS_INSTALLER_IDENTITY}" --timestamp)
+endif()
+execute_process(
+  COMMAND /usr/bin/productbuild
+    ${_sign}
+    --distribution "@CMAKE_CURRENT_BINARY_DIR@/distribution"
+    --package-path "${_temp}"
+    "${_prefix}/@MACOS_PACKAGE_NAME@.pkg"
+  COMMAND_ERROR_IS_FATAL ANY)
+
+if(EXISTS "${_prefix}/@MACOS_PACKAGE_NAME@.pkg")
+  file(REMOVE_RECURSE "${_temp}")
+  file(REMOVE_RECURSE "${_root}")
+endif()

@@ -1,0 +1,42 @@
+# Exclude everything
+/*
+
+# Except for project files
+!/.gitlab-ci.yml
+!AGENTS.md
+!CLAUDE.md
+!/build-aux
+!/cmake
+!/core
+!/data
+!/docs
+!/scripts
+!/src
+!/third_party
+!/tests
+!.clang-format
+!.gersemirc
+!.gitignore
+!buildspec.json
+!CMakeLists.txt
+!CMakePresets.json
+!LICENSE
+!README.md
+!README.zh-TW.md
+!THIRD-PARTY-NOTICES.txt
+
+# Exclude lock files
+*.lock.json
+
+# Exclude macOS legacy resource forks
+.DS_Store
+
+# Exclude CMake build number cache
+/cmake/.CMakeBuildNumber
+
+# Exclude local build output
+/core/build*/
+
+# Exclude Python bytecode
+__pycache__/
+*.pyc

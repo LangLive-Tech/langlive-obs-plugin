@@ -1,0 +1,42 @@
+login-phone	點選「浪LIVE > 登入」，預設的手機號碼登入分頁	標題、分頁、欄位提示、按鈕文字完整；同意條款與防詐騙提示的斷行
+login-phone-invalid	輸入的手機號碼不符合所選國碼的格式（範例：+886 只輸入 0912）	「請輸入正確格式的手機號碼」顯示於輸入框下方且不被截斷；輸入框為紅框
+login-qr	登入視窗切換至「QR Code 登入」分頁	掃描說明與倒數文字完整；QR Code 下方文字的斷行
+logout	點選「浪LIVE > 登出」	確認問題與按鈕文字完整
+golive	點選「浪LIVE > 開播」，直播間資訊載入完成	各欄位標題、提示文字、封面說明、直播場景選項、按鈕完整；內容未超出視窗寬度
+golive-loading	開播視窗開啟後，直播間資訊尚未載入完成	載入提示文字完整；表單與按鈕為停用狀態
+endlive	直播中，於開播視窗點選「結束直播」	確認問題與按鈕文字完整
+cover-crop	開播視窗點選「上傳封面」並選擇圖片後	標題、操作說明、縮放、按鈕文字完整
+preflight	OBS 推流設定不符合規格時點選「開始直播」（範例：多項設定同時不符）	每一項問題說明的斷行；直播場景選項與「套用設定並開始直播」按鈕文字完整
+golive-live	從插件開始直播後，開啟開播視窗	直播中提示的斷行；「結束直播」按鈕文字完整
+diagnostics	點選「浪LIVE > 問題排查」	說明、匯出內容清單、儲存位置、按鈕文字完整
+diagnostics-exported	問題排查匯出完成	說明文字的斷行（中文應為單行）；檔案路徑與按鈕文字完整
+update-available	點選「浪LIVE > 檢查更新」，且有一般更新	版本號正確代入；「稍後再說」「立即更新」按鈕文字完整
+update-required	低於最低支援版本時，點選任一選單項目	版本號正確代入；說明的斷行；視窗無法關閉，僅有「立即更新」
+msg-login-success	登入成功（範例暱稱：小浪）	暱稱代入位置與標點
+msg-session-expired	登入失效（後端回 99303）	訊息斷行
+msg-not-eligible	帳號未開通 OBS 開播權限（後端回 99302）	訊息斷行
+msg-sms-limit	當日驗證簡訊發送次數已達上限	訊息斷行
+msg-too-frequent	操作過於頻繁	訊息斷行
+msg-network	無法連線至浪LIVE	訊息斷行
+msg-send-code-failed	驗證碼傳送失敗	訊息斷行
+msg-login-failed	驗證碼錯誤或登入失敗	訊息斷行
+msg-login-update-required	需要更新才能登入時點選登入	訊息斷行
+msg-missing-fields	開播時未填標題與直播頻道	兩項訊息各自一行
+msg-saved	點選「儲存設定」成功	訊息斷行
+msg-load-failed	開播視窗無法載入直播間資訊	訊息斷行
+msg-save-failed	推流設定已套用，但直播間資訊無法儲存	訊息斷行
+msg-start-failed	無法開始直播	訊息斷行
+msg-web-live	Web 開播頁正在直播時，於插件點選「開始直播」	訊息斷行；「結束直播」引號位置
+msg-cover-load-failed	選擇的圖片無法讀取	訊息斷行
+msg-cover-save-failed	封面無法儲存	訊息斷行
+msg-cover-upload-failed	封面上傳失敗（後端未提供原因時）	訊息斷行
+msg-live-ended	從插件開始的直播，於插件外停止串流（例如 OBS「停止串流」）	標題「結束直播」、說明、按鈕「知道了」
+msg-preflight-apply-failed	開播前檢查點選「套用設定並開始直播」，但設定無法套用	訊息斷行
+msg-update-uptodate	點選「檢查更新」，已是最新版本	版本號正確代入
+msg-update-failed	無法檢查更新（網路或更新設定檔錯誤）	訊息斷行
+msg-update-download-failed	更新檔下載失敗	訊息斷行
+msg-update-checksum	下載的安裝檔驗證失敗	訊息斷行
+msg-update-installing	點選「立即更新」並下載完成，即將關閉 OBS	訊息斷行
+msg-update-launch-failed	無法開啟安裝程式	訊息斷行
+msg-update-live-blocked	直播中點選「立即更新」	訊息斷行
+msg-diag-failed	問題排查匯出失敗（範例原因：Permission denied）	失敗原因代入位置與斷行
